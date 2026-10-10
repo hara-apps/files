@@ -252,7 +252,7 @@ const T = {
   },
 }[LANG];
 
-const VERSION = '88ed4eb7007a';
+const VERSION = 'e9cfa6dc6e29';
 /* АДРЕСА - ПАРАМЕТРОМ ССЫЛКИ СИЛЬНЕЕ ЗАШИТОГО ПРИ ВЫКЛАДКЕ (урок `https://hara-search.laynenorstrud.workers.dev` у плеера:
    подстановка идёт В МОМЕНТ ДЕПЛОЯ, и если Worker тогда не был в реестре, страница
    остаётся без адреса НАВСЕГДА; ссылку же бот собирает заново на каждый тап). */
@@ -529,11 +529,24 @@ function open(f) {
      нарочно, и обещание «в память только имя» остаётся буквальным. Кнопки не прячем, а
      гасим: исчезнувшая читается как «функции нет» (закон №36), а причина стоит строкой
      выше. */
-  const noOrig = f.own !== 'doc' || !!f.secret;
-  $('aView').disabled = noOrig;
-  $('aSend').disabled = noOrig;
+  actGate();
   $('card').classList.add('on');
   window.scrollTo(0, 0);
+}
+
+/* ═══ ГЕЙТ ДЕЙСТВИЙ - ОДНА ДВЕРЬ, И ОНА СМОТРИТ НА ТЕКУЩУЮ КАРТОЧКУ ═══
+   ЖИВОЙ ДЕФЕКТ, НАЙДЕННЫЙ БРАУЗЕРНЫМ ПРОГОНОМ 10.10. Правило «оригинала нет - кнопки
+   погашены» стояло ТОЛЬКО в `open()`, а `send()` и `drop()` заканчивались безусловным
+   `disabled = false`. Поэтому поздний ответ по ПРОШЛОЙ карточке включал кнопку на
+   НЫНЕШНЕЙ: тапнул «в чат», вернулся, открыл файл с рубежом секретов - и «в чат» снова
+   нажимаем, хотя оригинала у нас нет и бот ответит отказом. Кнопка, обещающая работу,
+   которой не случится, хуже отсутствующей; а правило, записанное в трёх местах,
+   расходится всегда (закон №40). Теперь оно одно и спрашивает `CUR`, а не память. */
+function actGate() {
+  const noOrig = !CUR || CUR.own !== 'doc' || !!CUR.secret;
+  $('aView').disabled = noOrig;
+  $('aSend').disabled = noOrig;
+  $('aDrop').disabled = !CUR;
 }
 
 async function view() {
@@ -542,15 +555,15 @@ async function view() {
   csay(T.viewing);
   try {
     const a = await ask('fm_open', { n: CUR.num });
-    if (a.why) { csay(a.why === 'timeout' ? T.slow : a.why, 'bad'); $('aView').disabled = false; return; }
+    if (a.why) { csay(a.why === 'timeout' ? T.slow : a.why, 'bad'); actGate(); return; }
     const res = a.res || {};
-    if (!res.ok) { csay(res.note || T.noPreview, 'bad'); $('aView').disabled = false; return; }
+    if (!res.ok) { csay(res.note || T.noPreview, 'bad'); actGate(); return; }
     await draw(res.kind || '');
     csay('');
   } catch (e) {
     csay(String(e && e.message || e), 'bad');
   }
-  $('aView').disabled = false;
+  actGate();
 }
 
 /* РИСУЕМ РОВНО ОДНУ СТРАНИЦУ. Смысл предпросмотра - «это тот документ?», а не чтение:
@@ -612,7 +625,7 @@ async function send() {
   if (a.why) csay(a.why === 'timeout' ? T.slow : a.why, 'bad');
   else if (a.res && a.res.note) csay(a.res.note, a.res.ok ? 'ok' : 'bad');
   else csay(T.sent, 'ok');
-  $('aSend').disabled = false;
+  actGate();
 }
 
 async function drop() {
@@ -621,7 +634,7 @@ async function drop() {
   $('aDrop').disabled = true;
   csay(T.dropping);
   const a = await ask('fm_forget', { n: CUR.num });
-  $('aDrop').disabled = false;
+  actGate();
   if (a.why) { csay(a.why === 'timeout' ? T.slow : a.why, 'bad'); return; }
   if (a.res && a.res.note && !a.res.ok) { csay(a.res.note, 'bad'); return; }
   csay(T.dropped, 'ok');
