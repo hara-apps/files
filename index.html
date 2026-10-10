@@ -1,0 +1,701 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Мои файлы</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<!--
+  ═══ ФАЙЛОВЫЙ МЕНЕДЖЕР: ВИТРИНА АРХИВА ═══
+  ЧТО ЭТА СТРАНИЦА ДЕЛАЕТ САМА, А ЧТО ПРОСИТ У ДРУГИХ:
+    · показывает СНИМОК архива (номер, значок формата, имя, выжимка, размер, дата);
+    · ФИЛЬТРУЕТ по снимку у себя - без единого запроса наружу (имя, выжимка, формат,
+      источник, дата, размер);
+    · ИЩЕТ ПО ТЕКСТУ документов - этого у себя не может ФИЗИЧЕСКИ: содержимое зашифровано
+      ключом человека и лежит у бота, а обратный индекс - его MAC-хэши. Значит ищет бот, а
+      страница показывает находки, подставляя имена из СВОЕГО снимка;
+    · за БИЛЕТОМ ходит к Worker'у (там и только там проверяют подпись Telegram);
+    · снимок читает С ПЕСОЧНИЦЫ по билету, а действия просит у бота ЧЕРЕЗ ЯЩИК.
+
+  ═══ ПОЧЕМУ ИМЕНА ЕДУТ ЧЕРЕЗ ПЕСОЧНИЦУ, А НЕ ЧЕРЕЗ ЯЩИК (решение Ren) ═══
+  Ящик живёт в Cloudflare D1 - ЧУЖОЙ базе, и у нас записано правило: идентификаторов там
+  нет вовсе (`who` это HMAC от uid и даты). Имена документов человека - персональные
+  данные, и класть их туда значило бы завести в чужой базе ровно то, чего мы там не
+  держим. Поэтому в ящике ездят ТОЛЬКО НОМЕРА, а имена страница берёт из своей сессии на
+  нашей же машине - тем же билетом, что у студии.
+
+  ═══ ПРЕДПРОСМОТР: НЕ РЕНДЕРИМ ЗАРАНЕЕ (решение Ren, вариант «б») ═══
+  В сетке - значок расширения, имя и выжимка. Настоящий рендер страницы только по тапу
+  ОТКРЫТОГО файла: один рендер вместо трёхсот и никакой копии архива на песочнице.
+  Выжимка при этом уже лежит в снимке, поэтому карточка отвечает на «что это» мгновенно,
+  а рендер - добавка, а не условие работы.
+-->
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --ink:#12151a; --dim:#5b6270; --line:#e3e6ea;
+  --accent:#7c3aed; --accent-ink:#fff; --accent-line:#8b5cf6;
+  --warn:#92400e; --warn-bg:#fef3c7; --bad:#9d174d; --ok:#059669; --sel:#ede9fe;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f1115; --card:#171a20; --ink:#e7e9ee; --dim:#9aa2b1; --line:#262b34;
+    --accent:#8b5cf6; --accent-ink:#fff; --accent-line:#a78bfa;
+    --warn:#fbbf24; --warn-bg:#3a2f14; --bad:#fb7185; --ok:#34d399; --sel:#2a2140;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system,BlinkMacSystemFont,
+  "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  min-height:100vh; padding-bottom:40px; -webkit-text-size-adjust:100%;
+}
+header{
+  position:sticky; top:0; z-index:20; background:var(--card);
+  border-bottom:1px solid var(--line); padding:10px 12px 8px;
+}
+h1{font-size:16px; margin:0 0 2px; font-weight:650}
+.sub{font-size:12px; color:var(--dim)}
+#q{
+  width:100%; margin:8px 0 6px; padding:9px 11px; font-size:15px; color:var(--ink);
+  background:var(--bg); border:1px solid var(--line); border-radius:10px; outline:none;
+}
+#q:focus{border-color:var(--accent-line)}
+.chips{display:flex; gap:6px; flex-wrap:wrap}
+.chip{
+  padding:5px 10px; font-size:13px; border:1px solid var(--line); border-radius:999px;
+  background:var(--bg); color:var(--dim); cursor:pointer; user-select:none;
+}
+.chip.on{background:var(--sel); border-color:var(--accent-line); color:var(--ink)}
+#say{font-size:13px; margin-top:6px; min-height:17px}
+#say.bad{color:var(--bad)} #say.ok{color:var(--ok)}
+main{padding:10px 12px}
+.grid{display:grid; grid-template-columns:1fr; gap:8px}
+@media (min-width:520px){ .grid{grid-template-columns:1fr 1fr} }
+.f{
+  display:flex; gap:10px; align-items:flex-start; padding:10px;
+  background:var(--card); border:1px solid var(--line); border-radius:12px; cursor:pointer;
+}
+.f:active{background:var(--sel)}
+.ic{
+  flex:0 0 42px; height:42px; border-radius:9px; background:var(--sel); color:var(--accent);
+  display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700;
+  letter-spacing:.02em; text-transform:uppercase;
+}
+.fb{min-width:0; flex:1}
+.fn{font-size:14px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.fd{font-size:12px; color:var(--dim); margin-top:2px;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+.fm{font-size:11px; color:var(--dim); margin-top:3px}
+/* ФАЙЛ БЕЗ ТЕКСТА ВИДЕН В СЕТКЕ И НАЗЫВАЕТ СЕБЯ (требование Ren): он лежит в архиве как
+   все, но поиск по нему не найдёт НИЧЕГО НИКОГДА - содержимое мы нарочно не сохранили.
+   Молчаливо показанный наравне с остальными, он читался бы как поломка поиска. */
+.badge{
+  display:inline-block; margin-top:4px; padding:2px 7px; font-size:11px; border-radius:999px;
+  background:var(--warn-bg); color:var(--warn);
+}
+.qrow{display:flex; gap:6px; margin:8px 0 6px}
+.qrow #q{margin:0; flex:1}
+.qrow button{padding:9px 11px; font-size:13px; white-space:nowrap}
+.hit{
+  padding:10px; background:var(--card); border:1px solid var(--line); border-radius:12px;
+  cursor:pointer; margin-bottom:8px;
+}
+.hit:active{background:var(--sel)}
+.hitq{font-size:12px; color:var(--dim); margin-top:4px; white-space:pre-wrap;
+      word-break:break-word}
+.empty{color:var(--dim); font-size:14px; padding:18px 2px}
+.tip{
+  margin-top:14px; padding:10px 12px; font-size:13px; color:var(--dim);
+  background:var(--card); border:1px solid var(--line); border-radius:12px;
+}
+/* ═══ КАРТОЧКА ФАЙЛА ═══ */
+#card{
+  position:fixed; inset:0; z-index:40; background:var(--bg); overflow:auto;
+  display:none; padding:12px 12px 28px;
+}
+#card.on{display:block}
+#card h2{font-size:16px; margin:0 0 4px; word-break:break-word}
+.meta{font-size:12px; color:var(--dim); margin-bottom:10px}
+.exc{
+  background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px;
+  font-size:14px; white-space:pre-wrap; word-break:break-word; margin-bottom:12px;
+}
+.acts{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px}
+button{
+  font:inherit; font-size:14px; padding:9px 13px; border-radius:10px; cursor:pointer;
+  border:1px solid var(--line); background:var(--card); color:var(--ink);
+}
+button.p{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+button.d{color:var(--bad)}
+button[disabled]{opacity:.55; cursor:default}
+#view{margin-top:6px; text-align:center}
+#view canvas,#view img{max-width:100%; border:1px solid var(--line); border-radius:10px}
+#cardSay{font-size:13px; margin:6px 0; min-height:17px}
+#cardSay.bad{color:var(--bad)} #cardSay.ok{color:var(--ok)}
+#note{
+  margin:8px 12px 0; padding:9px 11px; font-size:13px; border-radius:10px;
+  background:var(--warn-bg); color:var(--warn);
+}
+</style>
+
+<header>
+  <h1 id="ttl">Мои файлы</h1>
+  <div class="sub" id="sub"></div>
+  <div class="qrow">
+    <input id="q" type="search" autocomplete="off" placeholder="">
+    <button id="deep"></button>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div id="say"></div>
+</header>
+<div id="note" hidden></div>
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="tip" id="tip"></div>
+</main>
+
+<div id="card">
+  <button id="back" style="margin-bottom:10px">←</button>
+  <h2 id="cName"></h2>
+  <div class="meta" id="cMeta"></div>
+  <div class="acts">
+    <button class="p" id="aView"></button>
+    <button id="aSend"></button>
+    <button class="d" id="aDrop"></button>
+  </div>
+  <div id="cardSay"></div>
+  <div id="cWhy"></div>
+  <div class="exc" id="cExc"></div>
+  <div id="view"></div>
+</div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+try { if (tg) { tg.ready(); tg.expand(); } } catch (e) {}
+const Q = new URLSearchParams(location.search);
+const LANG = (Q.get('lang') || (tg && tg.initDataUnsafe && tg.initDataUnsafe.user
+             && tg.initDataUnsafe.user.language_code) || 'ru').slice(0, 2) === 'en' ? 'en' : 'ru';
+
+const T = {
+  ru: {
+    ttl: 'Мои файлы',
+    /* ПЛЕЙСХОЛДЕР НАЗЫВАЕТ РОВНО ТО, ЧТО ЗДЕСЬ ПРОИСХОДИТ. Прежний обещал «или тексту», а
+       поле фильтрует ИМЯ И ВЫЖИМКУ у себя - подпись, которая врёт, хуже отсутствующей
+       функции, и человек списывал бы ненайденное на пустой архив. Текст ищет кнопка
+       рядом, и она ходит к боту. */
+    find: 'Фильтр по имени и выжимке',
+    deep: '🔎 В тексте', deepShort: 'Для поиска в тексте нужно слово от 4 букв.',
+    deepGo: 'Ищу в тексте всех файлов…',
+    deepNo: 'В текстах ничего не нашлось. Попробуй другое слово.',
+    deepTtl: (n, q) => 'Нашёл в тексте: ' + n + ' по запросу «' + q + '»',
+    deepBack: '← все файлы',
+    all: 'Все', mine: 'Свои', ours: 'Наши',
+    wk: 'За неделю', mo: 'За месяц', big: 'От 10 страниц', sml: 'До страницы',
+    loading: 'Собираю список…',
+    empty: 'Пока пусто. Пришли боту документ - он ляжет сюда.',
+    emptyQ: 'По этому фильтру ничего нет. Всего в архиве: ',
+    sub: (n, mb, cap, mbcap) => n + ' из ' + cap + ' · ' + mb + ' МБ из ' + mbcap + ' МБ',
+    /* ФАЙЛ БЕЗ ТЕКСТА: ЧТО СЛУЧИЛОСЬ, ЧТО ИЗ ЭТОГО СЛЕДУЕТ И ЧТО ДЕЛАТЬ. Без второй
+       половины человек прочитает пустой поиск как поломку, без третьей - останется без
+       выхода вовсе. */
+    noText: '🔐 без текста',
+    noTextWhy: 'Текста у этого файла нет: в нём нашлись похожие на секреты строки, и '
+               + 'содержимое я не сохранил. Поиск по тексту его не найдёт никогда, а '
+               + 'оригинала у меня нет - если он нужен, пришли файл заново.',
+    dictate: 'Искать можно и голосом: надиктуй боту в чат «найди в договоре пункт про '
+             + 'оплату» - он ищет по тексту всех файлов, а не только по именам.',
+    view: '👁 Показать', send: '📥 В чат', drop: '🗑 Забыть',
+    viewing: 'Несу файл…', sending: 'Отправляю в чат…', dropping: 'Убираю…',
+    sent: 'Отправил в чат.', dropped: 'Убрал из архива.',
+    noPreview: 'Показать этот формат страница не умеет - забери его в чат.',
+    sure: (n) => 'Забыть «' + n + '»? Вернуть будет нечем.',
+    noSign: 'Telegram не передал подпись - открой менеджер кнопкой из чата.',
+    noApi: 'Не доехал адрес бота - открой менеджер заново из чата.',
+    noBase: 'Не доехал адрес хранилища - открой менеджер заново из чата.',
+    slow: 'Бот пока не ответил. Он мог быть занят - попробуй ещё раз.',
+    old: 'Вышла новая версия - перезагружаю.',
+    oldStuck: 'Не могу обновиться сам. Закрой и открой менеджер из чата.',
+    ours_note: 'моя работа', bytes: 'К текста',
+  },
+  en: {
+    ttl: 'My files',
+    find: 'Filter by name and summary',
+    deep: '🔎 In text', deepShort: 'Text search needs a word of 4 letters or more.',
+    deepGo: 'Searching inside every file…',
+    deepNo: 'Nothing in the texts. Try another word.',
+    deepTtl: (n, q) => 'Found in text: ' + n + ' for "' + q + '"',
+    deepBack: '← all files',
+    all: 'All', mine: 'Mine', ours: 'Made here',
+    wk: 'This week', mo: 'This month', big: 'From 10 pages', sml: 'Under a page',
+    loading: 'Building the list…',
+    empty: 'Empty so far. Send the bot a document - it will land here.',
+    emptyQ: 'Nothing matches. Files in the archive: ',
+    sub: (n, mb, cap, mbcap) => n + ' of ' + cap + ' · ' + mb + ' MB of ' + mbcap + ' MB',
+    noText: '🔐 no text',
+    noTextWhy: 'This file has no text: it looked like it held secrets, so I did not keep '
+               + 'the contents. Text search will never find it, and I have no original - '
+               + 'send the file again if you need it.',
+    dictate: 'You can search by voice too: dictate to the bot in the chat - "find the '
+             + 'payment clause in the contract". It searches the text of every file, not '
+             + 'just the names.',
+    view: '👁 Preview', send: '📥 To chat', drop: '🗑 Forget',
+    viewing: 'Fetching the file…', sending: 'Sending to the chat…', dropping: 'Removing…',
+    sent: 'Sent to the chat.', dropped: 'Removed from the archive.',
+    noPreview: 'This page cannot preview that format - take it to the chat.',
+    sure: (n) => 'Forget "' + n + '"? There will be nothing to restore it from.',
+    noSign: 'Telegram did not pass the signature - open the manager from the chat button.',
+    noApi: 'The bot address did not arrive - reopen the manager from the chat.',
+    noBase: 'The storage address did not arrive - reopen the manager from the chat.',
+    slow: 'The bot has not answered yet. It may be busy - try again.',
+    old: 'A new version is out - reloading.',
+    oldStuck: 'I cannot update myself. Close and open the manager from the chat.',
+    ours_note: 'made here', bytes: 'K of text',
+  },
+}[LANG];
+
+const VERSION = '88ed4eb7007a';
+/* АДРЕСА - ПАРАМЕТРОМ ССЫЛКИ СИЛЬНЕЕ ЗАШИТОГО ПРИ ВЫКЛАДКЕ (урок `https://hara-search.laynenorstrud.workers.dev` у плеера:
+   подстановка идёт В МОМЕНТ ДЕПЛОЯ, и если Worker тогда не был в реестре, страница
+   остаётся без адреса НАВСЕГДА; ссылку же бот собирает заново на каждый тап). */
+const API = (Q.get('api') || 'https://hara-search.laynenorstrud.workers.dev').replace(/\/+$/, '');
+const BASE = (Q.get('pdf') || '').replace(/\/+$/, '');
+const INIT = (tg && tg.initData) || '';
+
+const $ = (id) => document.getElementById(id);
+const say = (t, cls) => { const e = $('say'); e.textContent = t || ''; e.className = cls || ''; };
+const csay = (t, cls) => { const e = $('cardSay'); e.textContent = t || ''; e.className = cls || ''; };
+const note = (t) => { const e = $('note'); e.textContent = t || ''; e.hidden = !t; };
+
+/* ПОЧЕМУ НЕ РАБОТАЕТ - ТРИ РАЗНЫХ ОТВЕТА, А НЕ ОДИН (урок плеера: одна фраза «связи с
+   ботом нет» стояла и там, где нет адреса, и там, где нет подписи). */
+function whyOff() {
+  if (!INIT) return T.noSign;
+  if (!API) return T.noApi;
+  if (!BASE) return T.noBase;
+  return '';
+}
+
+/* ═══ ФИЛЬТРЫ - ЧЕТЫРЕ НЕЗАВИСИМЫХ ГРУППЫ, А НЕ ОДНА СТРОКА (состав Ren: тип, дата,
+   размер, источник) ═══
+   Прежний `FILT` был ОДНИМ значением, то есть «pdf» отменял «свои», а «за неделю» отменило
+   бы оба. Человек, выбравший формат и период, получил бы период - и решил бы, что фильтр
+   формата сломан. Группы ортогональны: тап внутри группы переключает ЕЁ, а не соседей;
+   повторный тап по выбранному снимает его (обратный путь есть у каждого - закон №55). */
+const F = { own: 'all', ext: '', when: '', size: '' };
+/* СТРАНИЦА ТЕКСТА - ОДНА КОНСТАНТА, И ГРАНИЦЫ НАЗВАНЫ ЕЮ, А НЕ СЛОВОМ «КРУПНЫЕ»: последнее
+   каждый читает по-своему, а «от 10 страниц» проверяемо. ~2000 символов это машинописная
+   страница; в архиве у нас длина ТЕКСТА, а не вес файла (по ней же считается его потолок). */
+const PAGE = 2000;
+let TICKET = '', SID = '', FILES = [], CAP = {}, CUR = null, HITS = null, HITQ = '';
+
+const req = async (path, opt) => {
+  const o = opt || {};
+  o.headers = Object.assign({ 'X-Init-Data': INIT }, o.headers || {});
+  const r = await fetch(path, o);
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = null; }
+  return { status: r.status, j: j };
+};
+
+async function ticket() {
+  if (TICKET) return TICKET;
+  const r = await req(API + '/pdf/ticket', { method: 'POST', body: '{}' });
+  if (r.status !== 200 || !r.j || !r.j.ticket) {
+    const why = (r.j && (r.j.error || r.j.human)) || ('HTTP ' + r.status);
+    throw new Error('пропуск не выдан: ' + why);
+  }
+  TICKET = r.j.ticket; SID = r.j.sid;
+  return TICKET;
+}
+const u = (p) => BASE + p + '?ticket=' + encodeURIComponent(TICKET);
+
+/* ЯЩИК: ПОЛОЖИТЬ И ДОЖДАТЬСЯ. В строку уезжают ТОЛЬКО номер сессии и номер файла -
+   ни имени, ни выжимки, ни расширения (см. шапку файла). */
+async function ask(act, extra, tries) {
+  const body = Object.assign({ kind: 'fm', act: act, sid: SID }, extra || {});
+  const r = await req(API + '/signal', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.status !== 200 || !r.j || !r.j.id) return { why: 'HTTP ' + r.status };
+  const id = r.j.id;
+  for (let i = 0; i < (tries || 30); i++) {
+    await new Promise((z) => setTimeout(z, 1200));
+    const g = await req(API + '/result?id=' + encodeURIComponent(id));
+    if (g.status === 200 && g.j && g.j.state === 'done') return { res: g.j.res || {} };
+  }
+  return { why: 'timeout' };
+}
+
+/* ═══ СПИСОК ═══ */
+async function load() {
+  const off = whyOff();
+  if (off) { say(off, 'bad'); return; }
+  say(T.loading);
+  try {
+    await ticket();
+    const a = await ask('fm_list', {});
+    if (a.why) { say(a.why === 'timeout' ? T.slow : a.why, 'bad'); return; }
+    if (a.res && a.res.note) { say(a.res.note, 'bad'); return; }
+    const r = await fetch(u('/pdf/fm/list'));
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j || !j.ok) {
+      say((j && (j.human || j.error)) || ('HTTP ' + r.status), 'bad');
+      return;
+    }
+    FILES = j.files || [];
+    CAP = j.cap || {};
+    say('');
+    paint();
+  } catch (e) {
+    say(String(e && e.message || e), 'bad');
+  }
+}
+
+const fmtDate = (ts) => {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const p = (x) => (x < 10 ? '0' : '') + x;
+  return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear();
+};
+
+function match(f) {
+  const q = ($('q').value || '').trim().toLowerCase();
+  if (F.own === 'mine' && f.own !== 'doc') return false;
+  if (F.own === 'ours' && f.own !== 'ours') return false;
+  if (F.ext && (f.ext || '') !== F.ext) return false;
+  if (F.when) {
+    const days = F.when === 'wk' ? 7 : 31;
+    if (!f.ts || (Date.now() / 1000 - f.ts) > days * 86400) return false;
+  }
+  if (F.size === 'big' && (f.chars || 0) < PAGE * 10) return false;
+  if (F.size === 'sml' && (f.chars || 0) >= PAGE) return false;
+  if (!q) return true;
+  return ((f.name || '') + ' ' + (f.descr || '')).toLowerCase().indexOf(q) >= 0;
+}
+
+function paint() {
+  const g = $('grid');
+  g.innerHTML = '';
+  /* НАХОДКИ ПОКАЗЫВАЮТСЯ ВМЕСТО СЕТКИ, А НЕ РЯДОМ: смешанный список «нашлось в тексте» и
+     «просто лежит» неразличим глазами, и человек не поймёт, что из этого ответ на его
+     запрос. Выход обратно - своей кнопкой, а не перезаходом. */
+  if (HITS) return paintHits(g);
+  const list = FILES.filter(match);
+  $('sub').textContent = T.sub(FILES.length, ((CAP.bytes || 0) / 1048576).toFixed(1),
+                               CAP.max_files || '', CAP.max_mb || '');
+  if (!list.length) {
+    const d = document.createElement('div');
+    d.className = 'empty';
+    d.textContent = FILES.length ? (T.emptyQ + FILES.length) : T.empty;
+    g.appendChild(d);
+    return;
+  }
+  for (const f of list) {
+    const el = document.createElement('div');
+    el.className = 'f';
+    const ic = document.createElement('div');
+    ic.className = 'ic';
+    ic.textContent = (f.ext || (f.own === 'ours' ? '·' : '?')).slice(0, 4);
+    const b = document.createElement('div');
+    b.className = 'fb';
+    const n = document.createElement('div');
+    n.className = 'fn';
+    n.textContent = f.num + '. ' + (f.name || '');
+    const d = document.createElement('div');
+    d.className = 'fd';
+    d.textContent = f.descr || '';
+    const m = document.createElement('div');
+    m.className = 'fm';
+    m.textContent = [f.chars ? (Math.round(f.chars / 1000) + ' ' + T.bytes) : '',
+                     fmtDate(f.ts), f.own === 'ours' ? (f.src_label || T.ours_note) : '']
+                    .filter(Boolean).join(' · ');
+    b.appendChild(n); b.appendChild(d); b.appendChild(m);
+    if (f.secret) {
+      const w = document.createElement('div');
+      w.className = 'badge';
+      w.textContent = T.noText;
+      b.appendChild(w);
+    }
+    el.appendChild(ic); el.appendChild(b);
+    el.onclick = () => open(f);
+    g.appendChild(el);
+  }
+}
+
+/* ═══ ПОИСК ПО ТЕКСТУ: ЗАПРОС ИДЁТ В ПЕСОЧНИЦУ, В ЯЩИК - ТОЛЬКО «ИЩИ» ═══
+   Правило Ren абсолютное: через ящик едут ТОЛЬКО НОМЕРА. Запрос про свои документы -
+   такие же персональные данные, как имена файлов, а ящик живёт в Cloudflare D1, куда наш
+   `/delete_me` не дотягивается. Поэтому запрос кладётся В СЕССИЮ билетом (наша машина),
+   сигналом уезжает `{act:'fm_find', sid}`, а находки страница забирает оттуда же.
+   ИЩЕТ БОТ, И ИНАЧЕ НЕЛЬЗЯ ФИЗИЧЕСКИ: содержимое зашифровано ключом человека, а обратный
+   индекс - MAC-хэши стемов; без ключа страница не может даже посчитать хэш своего запроса. */
+const MIN_STEM = 4;   /* столько же требует индекс у бота: короче слова он не индексирует */
+
+async function findDeep() {
+  const q = ($('q').value || '').trim();
+  /* ГРАНИЦА НАЗЫВАЕТСЯ ДО ХОДА К БОТУ, А НЕ ПОСЛЕ: индекс не знает слов короче четырёх
+     букв, и «ничего не нашлось» на запросе «акт» было бы утверждением об архиве человека,
+     которого мы не делали (закон №22). */
+  if (!q.split(/[^0-9A-Za-zА-Яа-яЁё]+/).some((w) => w.length >= MIN_STEM)) {
+    say(T.deepShort, 'bad');
+    return;
+  }
+  const off = whyOff();
+  if (off) { say(off, 'bad'); return; }
+  $('deep').disabled = true;
+  say(T.deepGo);
+  try {
+    await ticket();
+    const r = await fetch(u('/pdf/fm/find'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: q }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => null);
+      say((j && (j.human || j.error)) || ('HTTP ' + r.status), 'bad');
+      return;
+    }
+    const a = await ask('fm_find', {});
+    if (a.why) { say(a.why === 'timeout' ? T.slow : a.why, 'bad'); return; }
+    if (a.res && a.res.note) { say(a.res.note, 'bad'); return; }
+    const g = await fetch(u('/pdf/fm/find'));
+    const j = await g.json().catch(() => null);
+    if (!g.ok || !j || !j.ok) {
+      say((j && (j.human || j.error)) || ('HTTP ' + g.status), 'bad');
+      return;
+    }
+    HITS = j.hits || [];
+    HITQ = q;
+    say(HITS.length ? '' : T.deepNo, HITS.length ? '' : 'bad');
+    paint();
+  } catch (e) {
+    say(String(e && e.message || e), 'bad');
+  } finally {
+    $('deep').disabled = false;
+  }
+}
+
+function paintHits(g) {
+  const back = document.createElement('button');
+  back.textContent = T.deepBack;
+  back.style.marginBottom = '10px';
+  back.onclick = () => { HITS = null; HITQ = ''; say(''); paint(); };
+  g.appendChild(back);
+  const h = document.createElement('div');
+  h.className = 'fm';
+  h.style.marginBottom = '8px';
+  h.textContent = T.deepTtl(HITS.length, HITQ);
+  g.appendChild(h);
+  for (const hit of HITS) {
+    /* ИМЯ БЕРЁТСЯ ИЗ СВОЕГО СНИМКА ПО НОМЕРУ (решение Ren: «бот отвечает НОМЕРАМИ, имена
+       страница подставляет из своей сессии»). Не нашлось - файл убрали, пока мы искали, и
+       строка про это честнее молчаливого пропуска. */
+    const f = FILES.filter((x) => x.num === hit.n)[0];
+    const el = document.createElement('div');
+    el.className = 'hit';
+    const n = document.createElement('div');
+    n.className = 'fn';
+    n.textContent = hit.n + '. ' + ((f && f.name) || '—');
+    const c = document.createElement('div');
+    c.className = 'hitq';
+    c.textContent = hit.chunk || '';
+    el.appendChild(n); el.appendChild(c);
+    if (f) el.onclick = () => open(f);
+    g.appendChild(el);
+  }
+}
+
+/* ═══ КАРТОЧКА: ПРЕДПРОСМОТР ТОЛЬКО ПО ТАПУ ═══ */
+function open(f) {
+  CUR = f;
+  $('cName').textContent = f.num + '. ' + (f.name || '');
+  $('cMeta').textContent = [f.ext ? f.ext.toUpperCase() : '',
+                            f.chars ? (Math.round(f.chars / 1000) + ' ' + T.bytes) : '',
+                            fmtDate(f.ts),
+                            f.own === 'ours' ? (f.src_label || T.ours_note) : ''
+                           ].filter(Boolean).join(' · ');
+  $('cExc').textContent = f.descr || '';
+  $('view').innerHTML = '';
+  csay('');
+  /* ФАЙЛ БЕЗ ТЕКСТА ОБЪЯСНЯЕТСЯ ЗДЕСЬ ЦЕЛИКОМ, А НЕ ЗНАЧКОМ: в сетке значок отвечает на
+     «что это», а в карточке человек спрашивает «почему», и ответ обязан назвать и
+     причину, и следствие для поиска, и что с этим делать (требование Ren). */
+  const why = $('cWhy');
+  why.className = f.secret ? 'badge' : '';
+  why.textContent = f.secret ? T.noTextWhy : '';
+  /* КНОПКИ, КОТОРЫЕ НИЧЕГО НЕ СДЕЛАЮТ, НЕ ПОКАЗЫВАЕМ БЕЗ ПРИЧИНЫ: у НАШЕЙ работы
+     (расшифровка ролика) оригинала не существует, и «показать» с «в чат» вели бы в отказ.
+     У файла с рубежом секретов его тоже нет - указатель на документ мы там НЕ СОХРАНЯЕМ
+     нарочно, и обещание «в память только имя» остаётся буквальным. Кнопки не прячем, а
+     гасим: исчезнувшая читается как «функции нет» (закон №36), а причина стоит строкой
+     выше. */
+  const noOrig = f.own !== 'doc' || !!f.secret;
+  $('aView').disabled = noOrig;
+  $('aSend').disabled = noOrig;
+  $('card').classList.add('on');
+  window.scrollTo(0, 0);
+}
+
+async function view() {
+  if (!CUR) return;
+  $('aView').disabled = true;
+  csay(T.viewing);
+  try {
+    const a = await ask('fm_open', { n: CUR.num });
+    if (a.why) { csay(a.why === 'timeout' ? T.slow : a.why, 'bad'); $('aView').disabled = false; return; }
+    const res = a.res || {};
+    if (!res.ok) { csay(res.note || T.noPreview, 'bad'); $('aView').disabled = false; return; }
+    await draw(res.kind || '');
+    csay('');
+  } catch (e) {
+    csay(String(e && e.message || e), 'bad');
+  }
+  $('aView').disabled = false;
+}
+
+/* РИСУЕМ РОВНО ОДНУ СТРАНИЦУ. Смысл предпросмотра - «это тот документ?», а не чтение:
+   листалка тут означала бы вторую студию, а она уже есть и открывается из чата. */
+async function draw(kind) {
+  const box = $('view');
+  box.innerHTML = '';
+  const r = await fetch(u('/pdf/fm/file') + '&n=' + encodeURIComponent(CUR.num));
+  if (!r.ok) { csay('HTTP ' + r.status, 'bad'); return; }
+  const buf = await r.arrayBuffer();
+  if (kind === 'img') {
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(new Blob([buf]));
+    box.appendChild(img);
+    return;
+  }
+  if (kind !== 'pdf') { csay(T.noPreview, 'bad'); return; }
+  const pdfjs = await loadPdfjs();
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+  const page = await doc.getPage(1);
+  const w = Math.min(box.clientWidth || 320, 640);
+  const v0 = page.getViewport({ scale: 1 });
+  const v = page.getViewport({ scale: w / v0.width });
+  const c = document.createElement('canvas');
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  c.width = Math.round(v.width * dpr); c.height = Math.round(v.height * dpr);
+  c.style.width = Math.round(v.width) + 'px';
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  await page.render({ canvasContext: g, viewport: v }).promise;
+  box.appendChild(c);
+}
+
+/* PDF.JS: СОВРЕМЕННАЯ СБОРКА, ОТКАТ НА LEGACY БЕЗ ПЕРЕДЕЛКИ - ровно как в студии, и
+   ФАЙЛЫ ТЕ ЖЕ САМЫЕ (выкладка берёт их из miniapp_pdf, второй копии в репозитории нет:
+   две копии одной библиотеки разъехались бы по версии, и разошлись бы молча).
+   ЛОВИМ НЕ ТОЛЬКО ОТКАЗ ИМПОРТА: современная сборка в части вебвью импортируется без
+   единой ошибки и падает уже НА ДОКУМЕНТЕ - тогда человек получил бы сырую чужую ошибку
+   вместо отката, ради которого вторая сборка и лежит рядом. */
+let PDFJS = null;
+async function loadPdfjs() {
+  if (PDFJS) return PDFJS;
+  for (const p of ['./pdf.min.mjs', './legacy/pdf.min.mjs']) {
+    try {
+      const m = await import(p);
+      m.GlobalWorkerOptions.workerSrc = p.replace('pdf.min.mjs', 'pdf.worker.min.mjs');
+      PDFJS = m;
+      return m;
+    } catch (e) { /* следующая ступень */ }
+  }
+  throw new Error('pdf.js не загрузился');
+}
+
+async function send() {
+  if (!CUR) return;
+  $('aSend').disabled = true;
+  csay(T.sending);
+  const a = await ask('fm_send', { n: CUR.num });
+  if (a.why) csay(a.why === 'timeout' ? T.slow : a.why, 'bad');
+  else if (a.res && a.res.note) csay(a.res.note, a.res.ok ? 'ok' : 'bad');
+  else csay(T.sent, 'ok');
+  $('aSend').disabled = false;
+}
+
+async function drop() {
+  if (!CUR) return;
+  if (!confirm(T.sure(CUR.name || ('#' + CUR.num)))) return;
+  $('aDrop').disabled = true;
+  csay(T.dropping);
+  const a = await ask('fm_forget', { n: CUR.num });
+  $('aDrop').disabled = false;
+  if (a.why) { csay(a.why === 'timeout' ? T.slow : a.why, 'bad'); return; }
+  if (a.res && a.res.note && !a.res.ok) { csay(a.res.note, 'bad'); return; }
+  csay(T.dropped, 'ok');
+  FILES = FILES.filter((x) => x.num !== CUR.num);
+  paint();
+  setTimeout(() => { $('card').classList.remove('on'); }, 700);
+}
+
+/* САМООБНОВЛЕНИЕ. Спрашиваем WORKER'А, а не файл рядом со страницей: сосед лежит на том
+   же хосте и попадает в тот же кэш вебвью, то есть отвечает ровно так же устарело. */
+async function checkVersion() {
+  if (!API) return;
+  try {
+    const r = await fetch(API + '/appver?app=files');
+    const j = await r.json();
+    if (!j || j.error) return;
+    if (!j.ver || j.ver === VERSION) return;
+    if (Q.get('r') === '1') { note(T.oldStuck); return; }
+    note(T.old);
+    const q = new URLSearchParams(location.search);
+    q.set('v', j.ver); q.set('r', '1');
+    location.replace(location.pathname + '?' + q.toString());
+  } catch (e) { /* сеть молчит - работаем как есть */ }
+}
+
+function chips() {
+  const box = $('chips');
+  /* ГРУППА, ЗНАЧЕНИЕ, ПОДПИСЬ. Тап внутри группы переключает только ЕЁ; повторный тап по
+     выбранному возвращает группу к «не выбрано» - обратный путь есть у каждого фильтра
+     (закон №55), иначе выбранный период снимался бы только перезаходом. */
+  const mk = (grp, val, label) => {
+    const c = document.createElement('div');
+    c.className = 'chip' + (F[grp] === val ? ' on' : '');
+    c.textContent = label;
+    c.onclick = () => {
+      F[grp] = (F[grp] === val && grp !== 'own') ? '' : val;
+      chips(); paint();
+    };
+    return c;
+  };
+  box.innerHTML = '';
+  box.appendChild(mk('own', 'all', T.all));
+  box.appendChild(mk('own', 'mine', T.mine));
+  box.appendChild(mk('own', 'ours', T.ours));
+  /* ФОРМАТЫ - ИЗ ТОГО, ЧТО ПРАВДА ЛЕЖИТ В АРХИВЕ. Зашитый список показывал бы «XLSX»
+     человеку, у которого таблиц нет ни одной, то есть фильтр в заведомую пустоту. */
+  const seen = [];
+  for (const f of FILES) if (f.ext && seen.indexOf(f.ext) < 0) seen.push(f.ext);
+  seen.sort();
+  for (const e of seen.slice(0, 6)) box.appendChild(mk('ext', e, e.toUpperCase()));
+  box.appendChild(mk('when', 'wk', T.wk));
+  box.appendChild(mk('when', 'mo', T.mo));
+  box.appendChild(mk('size', 'big', T.big));
+  box.appendChild(mk('size', 'sml', T.sml));
+}
+
+$('ttl').textContent = T.ttl;
+$('q').placeholder = T.find;
+$('tip').textContent = T.dictate;
+$('aView').textContent = T.view;
+$('aSend').textContent = T.send;
+$('aDrop').textContent = T.drop;
+$('deep').textContent = T.deep;
+$('deep').onclick = findDeep;
+/* ФИЛЬТР ПО СНИМКУ ИДЁТ НА КАЖДУЮ БУКВУ (он у себя и ничего не стоит), а поиск по тексту -
+   только по кнопке: он ходит к боту через две машины, и запрос на каждую букву означал бы
+   десяток поисков вместо одного нужного. */
+$('q').oninput = () => { if (HITS) { HITS = null; HITQ = ''; say(''); } paint(); };
+$('q').onkeydown = (e) => { if (e.key === 'Enter') findDeep(); };
+$('back').onclick = () => { $('card').classList.remove('on'); };
+$('aView').onclick = view;
+$('aSend').onclick = send;
+$('aDrop').onclick = drop;
+chips();
+load().then(chips);
+checkVersion();
+</script>
