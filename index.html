@@ -252,12 +252,16 @@ const T = {
   },
 }[LANG];
 
-const VERSION = 'e9cfa6dc6e29';
-/* АДРЕСА - ПАРАМЕТРОМ ССЫЛКИ СИЛЬНЕЕ ЗАШИТОГО ПРИ ВЫКЛАДКЕ (урок `https://hara-search.laynenorstrud.workers.dev` у плеера:
+const VERSION = 'a740ebaa5a34';
+/* АДРЕСА - ПАРАМЕТРОМ ССЫЛКИ СИЛЬНЕЕ ЗАШИТОГО ПРИ ВЫКЛАДКЕ (урок `https://rtc.harma.cc` у плеера:
    подстановка идёт В МОМЕНТ ДЕПЛОЯ, и если Worker тогда не был в реестре, страница
    остаётся без адреса НАВСЕГДА; ссылку же бот собирает заново на каждый тап). */
-const API = (Q.get('api') || 'https://hara-search.laynenorstrud.workers.dev').replace(/\/+$/, '');
+const API = (Q.get('api') || 'https://rtc.harma.cc').replace(/\/+$/, '');
 const BASE = (Q.get('pdf') || '').replace(/\/+$/, '');
+/* ОТПЕЧАТОК БОТА, ЧЬЕЙ КНОПКОЙ ОТКРЫЛИ СТРАНИЦУ: он уезжает обратно в каждом сигнале,
+   чтобы задачу забрал ИМЕННО ЭТОТ бот, а не первый опросивший общий ящик. Пусто -
+   работаем как раньше (ссылка старая либо бот ещё не знает своего отпечатка). */
+const BFP = Q.get('bfp') || '';
 const INIT = (tg && tg.initData) || '';
 
 const $ = (id) => document.getElementById(id);
@@ -311,7 +315,12 @@ const u = (p) => BASE + p + '?ticket=' + encodeURIComponent(TICKET);
 /* ЯЩИК: ПОЛОЖИТЬ И ДОЖДАТЬСЯ. В строку уезжают ТОЛЬКО номер сессии и номер файла -
    ни имени, ни выжимки, ни расширения (см. шапку файла). */
 async function ask(act, extra, tries) {
-  const body = Object.assign({ kind: 'fm', act: act, sid: SID }, extra || {});
+  /* ЯРЛЫК БОТА ЕДЕТ В КАЖДОМ СИГНАЛЕ. Ящик общий на прод и тест, и без ярлыка задачу
+     забирал первый опросивший бот - то есть «показать файл» могло ответить из чужого
+     контура. Ярлык дал тот бот, чьей кнопкой открыли страницу; ничего, кроме маршрута,
+     он не решает. */
+  const body = Object.assign({ kind: 'fm', act: act, sid: SID },
+                             BFP ? { bot: BFP } : {}, extra || {});
   const r = await req(API + '/signal', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
