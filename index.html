@@ -207,6 +207,7 @@ const T = {
     viewing: 'Несу файл…', sending: 'Отправляю в чат…', dropping: 'Убираю…',
     sent: 'Отправил в чат.', dropped: 'Убрал из архива.',
     noPreview: 'Показать этот формат страница не умеет - забери его в чат.',
+    noPdfjs: 'pdf.js не загрузился - предпросмотр показать нечем.',
     sure: (n) => 'Забыть «' + n + '»? Вернуть будет нечем.',
     noSign: 'Telegram не передал подпись - открой менеджер кнопкой из чата.',
     noApi: 'Не доехал адрес бота - открой менеджер заново из чата.',
@@ -241,6 +242,7 @@ const T = {
     viewing: 'Fetching the file…', sending: 'Sending to the chat…', dropping: 'Removing…',
     sent: 'Sent to the chat.', dropped: 'Removed from the archive.',
     noPreview: 'This page cannot preview that format - take it to the chat.',
+    noPdfjs: 'pdf.js did not load - nothing to preview with.',
     sure: (n) => 'Forget "' + n + '"? There will be nothing to restore it from.',
     noSign: 'Telegram did not pass the signature - open the manager from the chat button.',
     noApi: 'The bot address did not arrive - reopen the manager from the chat.',
@@ -252,7 +254,7 @@ const T = {
   },
 }[LANG];
 
-const VERSION = 'a740ebaa5a34';
+const VERSION = '340a5b2bfce1';
 /* АДРЕСА - ПАРАМЕТРОМ ССЫЛКИ СИЛЬНЕЕ ЗАШИТОГО ПРИ ВЫКЛАДКЕ (урок `https://rtc.harma.cc` у плеера:
    подстановка идёт В МОМЕНТ ДЕПЛОЯ, и если Worker тогда не был в реестре, страница
    остаётся без адреса НАВСЕГДА; ссылку же бот собирает заново на каждый тап). */
@@ -591,7 +593,13 @@ async function draw(kind) {
   }
   if (kind !== 'pdf') { csay(T.noPreview, 'bad'); return; }
   const pdfjs = await loadPdfjs();
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+  /* ЗАПРЕТ `ImageDecoder` - ТО ЖЕ, ЧТО В СТУДИИ, И ПО ТОЙ ЖЕ ПРИЧИНЕ: PDF со вложенными
+     JPEG (любой скан) УРОНИЛ страницу целиком в webkit - движке Telegram Desktop на
+     macOS. Найдено первым прогоном в webkit 31.10; chromium и firefox тот же файл
+     рисуют. Цена запрета - скорость декодирования, цена падения - потерянный документ
+     без причины. */
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf),
+                                        isImageDecoderSupported: false }).promise;
   const page = await doc.getPage(1);
   const w = Math.min(box.clientWidth || 320, 640);
   const v0 = page.getViewport({ scale: 1 });
@@ -606,24 +614,53 @@ async function draw(kind) {
   box.appendChild(c);
 }
 
-/* PDF.JS: СОВРЕМЕННАЯ СБОРКА, ОТКАТ НА LEGACY БЕЗ ПЕРЕДЕЛКИ - ровно как в студии, и
-   ФАЙЛЫ ТЕ ЖЕ САМЫЕ (выкладка берёт их из miniapp_pdf, второй копии в репозитории нет:
-   две копии одной библиотеки разъехались бы по версии, и разошлись бы молча).
+/* PDF.JS: ТРИ СТУПЕНИ - ровно те же, что в студии, и ФАЙЛЫ ТЕ ЖЕ САМЫЕ (выкладка берёт
+   их из miniapp_pdf, второй копии в репозитории нет: две копии одной библиотеки
+   разъехались бы по версии, и разошлись бы молча, закон №40).
+   ТРЕТЬЯ СТУПЕНЬ `./compat` ПОЯВИЛАСЬ ПО ЖИВОМУ ОТКАЗУ ПРОДА 31.10: в Telegram Desktop
+   на macOS отказали ОБЕ прежние, потому что legacy-сборка pdf.js полифилит МЕТОДЫ и не
+   трогает СИНТАКСИС - у обеих в коде `static{}` (Safari 16.4) и приватные поля, то есть
+   модуль не разбирается ВОВСЕ и обе ступени падают одинаково. Разбор - в шапке
+   `tools/pdfjs_compat.py`.
    ЛОВИМ НЕ ТОЛЬКО ОТКАЗ ИМПОРТА: современная сборка в части вебвью импортируется без
    единой ошибки и падает уже НА ДОКУМЕНТЕ - тогда человек получил бы сырую чужую ошибку
    вместо отката, ради которого вторая сборка и лежит рядом. */
 let PDFJS = null;
+/* ПРИЧИНЫ ПО СТУПЕНЯМ НЕ ГЛОТАЕМ. Здесь ошибка ступени уходила в пустой `catch`, а наружу
+   шло голое `throw new Error('pdf.js не загрузился')`: человек получал фразу, по которой
+   нельзя отличить 404 от SyntaxError, и разбор прод-отказа ушёл на день (закон №22). */
+const PDFJS_WHY = [];
 async function loadPdfjs() {
   if (PDFJS) return PDFJS;
-  for (const p of ['./pdf.min.mjs', './legacy/pdf.min.mjs']) {
+  PDFJS_WHY.length = 0;
+  for (const p of ['./pdf.min.mjs', './legacy/pdf.min.mjs', './compat/pdf.min.mjs']) {
     try {
       const m = await import(p);
       m.GlobalWorkerOptions.workerSrc = p.replace('pdf.min.mjs', 'pdf.worker.min.mjs');
       PDFJS = m;
       return m;
-    } catch (e) { /* следующая ступень */ }
+    } catch (e) {
+      const why = p + ': ' + ((e && (e.message || e.name)) || e);
+      PDFJS_WHY.push(why);
+      console.log('[fm] сборка pdf.js не поднялась - ' + why);
+    }
   }
-  throw new Error('pdf.js не загрузился');
+  /* ЧЕГО НЕ ХВАТИЛО ДВИЖКУ - СПРАШИВАЕМ У НЕГО, А НЕ У UA. Это объяснение, а не решение:
+     решает факт загрузки выше. */
+  const gaps = [];
+  /* ДВА РАЗНЫХ ОТКАЗА `new Function` НЕ СЛИВАЮТСЯ В ОДНУ ФРАЗУ (закон №22): SyntaxError
+     это «движок не знает синтаксиса», другая ошибка - «спросить не дали» (запрет eval). */
+  try {
+    new Function('class X{static {}}');
+  } catch (e) {
+    gaps.push((e && e.name === 'SyntaxError')
+      ? 'нет блоков static{} в классах (Safari до 16.4)'
+      : 'про блоки static{} спросить не дали: ' + ((e && e.name) || 'неизвестно'));
+  }
+  try { if (!Map.prototype.getOrInsertComputed) gaps.push('нет Map.getOrInsertComputed'); } catch (e) { gaps.push('нет Map.getOrInsertComputed'); }
+  throw new Error(T.noPdfjs + ' Ступени: ' + PDFJS_WHY.join('; ') + '.'
+                + (gaps.length ? ' Движок: ' + gaps.join(', ') + '.' : '')
+                + ' Движок целиком: ' + ((navigator && navigator.userAgent) || '?').slice(0, 120));
 }
 
 async function send() {
