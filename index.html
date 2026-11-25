@@ -3,6 +3,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Мои файлы</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<!-- ПОЛИФИЛЫ СТАРОГО ВЕБВЬЮ (кейс 24.11, Safari < 17.4) - до pdf.js; тот же файл берёт воркер -->
+<script src="./polyfills.js"></script>
 <!--
   ═══ ФАЙЛОВЫЙ МЕНЕДЖЕР: ВИТРИНА АРХИВА ═══
   ЧТО ЭТА СТРАНИЦА ДЕЛАЕТ САМА, А ЧТО ПРОСИТ У ДРУГИХ:
@@ -131,6 +133,23 @@ button[disabled]{opacity:.55; cursor:default}
 #view canvas,#view img{max-width:100%; border:1px solid var(--line); border-radius:10px}
 #cardSay{font-size:13px; margin:6px 0; min-height:17px}
 #cardSay.bad{color:var(--bad)} #cardSay.ok{color:var(--ok)}
+/* ═══ МЕДИА ДЛЯ МОНТАЖА: мультивыбор и «Смонтировать» (ТЗ монтажа 13.11) ═══ */
+#media{margin:10px 12px 0}
+#media h3{font-size:14px; margin:0 0 6px; font-weight:650}
+.mgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px}
+.mit{
+  background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 10px;
+  font-size:13px; cursor:pointer; position:relative; -webkit-user-select:none; user-select:none;
+}
+.mit.on{border-color:var(--accent); background:var(--sel)}
+.mit .mk{font-size:12px; color:var(--dim)}
+.mit .md{display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+.mit .tick{position:absolute; top:6px; right:8px; font-size:15px}
+#mbar{
+  position:sticky; bottom:0; z-index:15; margin-top:8px; padding:8px 0;
+  background:linear-gradient(transparent, var(--bg) 30%);
+}
+#mbar button{width:100%}
 #note{
   margin:8px 12px 0; padding:9px 11px; font-size:13px; border-radius:10px;
   background:var(--warn-bg); color:var(--warn);
@@ -148,6 +167,11 @@ button[disabled]{opacity:.55; cursor:default}
   <div id="say"></div>
 </header>
 <div id="note" hidden></div>
+<section id="media" hidden>
+  <h3 id="mTtl"></h3>
+  <div class="mgrid" id="mgrid"></div>
+  <div id="mbar"><button class="p" id="mGo" disabled></button></div>
+</section>
 <main>
   <div class="grid" id="grid"></div>
   <div class="tip" id="tip"></div>
@@ -208,6 +232,11 @@ const T = {
     sent: 'Отправил в чат.', dropped: 'Убрал из архива.',
     noPreview: 'Показать этот формат страница не умеет - забери его в чат.',
     noPdfjs: 'pdf.js не загрузился - предпросмотр показать нечем.',
+    errOld: 'Встроенный браузер этого Telegram слишком старый для страниц PDF. Обнови Telegram и систему.',
+    errPwd: 'Документ под паролем, без него страницы не показать.',
+    errBad: 'Файл повреждён или это не PDF.',
+    errNet: 'Связь оборвалась по дороге. Проверь интернет и повтори.',
+    errAny: 'Предпросмотр не открылся. Повтори или забери файл в чат.',
     sure: (n) => 'Забыть «' + n + '»? Вернуть будет нечем.',
     noSign: 'Telegram не передал подпись - открой менеджер кнопкой из чата.',
     noApi: 'Не доехал адрес бота - открой менеджер заново из чата.',
@@ -216,6 +245,11 @@ const T = {
     old: 'Вышла новая версия - перезагружаю.',
     oldStuck: 'Не могу обновиться сам. Закрой и открой менеджер из чата.',
     ours_note: 'моя работа', bytes: 'К текста',
+    mTtl: '🎬 Медиа для монтажа - отметь 2 и больше',
+    mGo: (n) => n ? '🎬 Смонтировать (' + n + ')' : '🎬 Смонтировать',
+    mMax: (n) => 'Не больше ' + n + ' за раз.',
+    mSent: 'Готово - экран монтажа пришёл в чат.',
+    mKind: { photo: '📷 Фото', video: '🎞 Видео', video_note: '⭕ Кружок' },
   },
   en: {
     ttl: 'My files',
@@ -243,6 +277,11 @@ const T = {
     sent: 'Sent to the chat.', dropped: 'Removed from the archive.',
     noPreview: 'This page cannot preview that format - take it to the chat.',
     noPdfjs: 'pdf.js did not load - nothing to preview with.',
+    errOld: 'The browser inside this Telegram is too old for PDF pages. Update Telegram and the system.',
+    errPwd: 'The document is password protected, its pages cannot be shown.',
+    errBad: 'The file is damaged or is not a PDF.',
+    errNet: 'The connection dropped on the way. Check the internet and try again.',
+    errAny: 'The preview did not open. Try again or take the file to the chat.',
     sure: (n) => 'Forget "' + n + '"? There will be nothing to restore it from.',
     noSign: 'Telegram did not pass the signature - open the manager from the chat button.',
     noApi: 'The bot address did not arrive - reopen the manager from the chat.',
@@ -251,10 +290,15 @@ const T = {
     old: 'A new version is out - reloading.',
     oldStuck: 'I cannot update myself. Close and open the manager from the chat.',
     ours_note: 'made here', bytes: 'K of text',
+    mTtl: '🎬 Media for a montage - pick 2 or more',
+    mGo: (n) => n ? '🎬 Make a montage (' + n + ')' : '🎬 Make a montage',
+    mMax: (n) => 'No more than ' + n + ' at once.',
+    mSent: 'Done - the montage screen is in the chat.',
+    mKind: { photo: '📷 Photo', video: '🎞 Video', video_note: '⭕ Circle' },
   },
 }[LANG];
 
-const VERSION = '340a5b2bfce1';
+const VERSION = 'db878bb3e010';
 /* АДРЕСА - ПАРАМЕТРОМ ССЫЛКИ СИЛЬНЕЕ ЗАШИТОГО ПРИ ВЫКЛАДКЕ (урок `https://rtc.harma.cc` у плеера:
    подстановка идёт В МОМЕНТ ДЕПЛОЯ, и если Worker тогда не был в реестре, страница
    остаётся без адреса НАВСЕГДА; ссылку же бот собирает заново на каждый тап). */
@@ -292,6 +336,9 @@ const F = { own: 'all', ext: '', when: '', size: '' };
    страница; в архиве у нас длина ТЕКСТА, а не вес файла (по ней же считается его потолок). */
 const PAGE = 2000;
 let TICKET = '', SID = '', FILES = [], CAP = {}, CUR = null, HITS = null, HITQ = '';
+/* МЕДИА: ключи из снимка (l<id> - память лички, c<вид><номер> - холст), file_id сюда не
+   приезжает. Выбор - порядок тапов: в этом порядке материалы уйдут режиссёру. */
+let MEDIA = [], MTG = null, PICK = [];
 
 const req = async (path, opt) => {
   const o = opt || {};
@@ -355,8 +402,11 @@ async function load() {
     }
     FILES = j.files || [];
     CAP = j.cap || {};
+    MEDIA = j.media || [];
+    MTG = j.montage || null;
     say('');
     paint();
+    paintMedia();
   } catch (e) {
     say(String(e && e.message || e), 'bad');
   }
@@ -572,7 +622,12 @@ async function view() {
     await draw(res.kind || '');
     csay('');
   } catch (e) {
-    csay(String(e && e.message || e), 'bad');
+    /* СЫРОЙ ТЕКСТ ИСКЛЮЧЕНИЯ - В КОНСОЛЬ, ЧЕЛОВЕКУ - ПРИЧИНА СЛОВАМИ (кейс 24.11): наши же
+       фразы (`T.err*`, `T.noPdfjs`) проходят как есть, чужое - переводится */
+    const m = String((e && e.message) || e);
+    console.log('[fm] предпросмотр: ' + m);
+    const own = [T.errOld, T.errPwd, T.errBad, T.errNet].includes(m) || m.startsWith(T.noPdfjs);
+    csay(own ? m : (/load failed|failed to fetch|networkerror/i.test(m) ? T.errNet : T.errAny), 'bad');
   }
   actGate();
 }
@@ -592,7 +647,25 @@ async function draw(kind) {
     return;
   }
   if (kind !== 'pdf') { csay(T.noPreview, 'bad'); return; }
-  const pdfjs = await loadPdfjs();
+  /* ОТКАТ И ПО ОТКАЗУ В РАБОТЕ: сборка, импортированная без ошибки, может упасть уже на
+     документе (старый вебвью, кейс 24.11) - тогда следующая ступень, а не сырая чужая ошибка.
+     Байты на каждую попытку свежие: pdf.js отсоединяет буфер, отдав его воркеру. */
+  if (PDFJS_AT >= 3) PDFJS_AT = 0;       // прошлый отказ мог быть сетью - пробуем заново
+  for (;;) {
+    const lib = await loadPdfjs();
+    try { await drawPdf(lib, buf.slice(0), box); return; } catch (e) {
+      const n = String((e && e.name) || '');
+      console.log('[fm] ступень ' + PDFJS_AT + ' отказала на документе: ' + n + ' ' + ((e && e.message) || e));
+      if (n === 'PasswordException') throw new Error(T.errPwd);
+      if (n === 'InvalidPDFException') throw new Error(T.errBad);
+      box.innerHTML = '';
+      PDFJS = null; PDFJS_AT++;
+      if (PDFJS_AT >= 3) throw new Error(T.errOld);
+    }
+  }
+}
+
+async function drawPdf(pdfjs, buf, box) {
   /* ЗАПРЕТ `ImageDecoder` - ТО ЖЕ, ЧТО В СТУДИИ, И ПО ТОЙ ЖЕ ПРИЧИНЕ: PDF со вложенными
      JPEG (любой скан) УРОНИЛ страницу целиком в webkit - движке Telegram Desktop на
      macOS. Найдено первым прогоном в webkit 31.10; chromium и firefox тот же файл
@@ -626,6 +699,7 @@ async function draw(kind) {
    единой ошибки и падает уже НА ДОКУМЕНТЕ - тогда человек получил бы сырую чужую ошибку
    вместо отката, ради которого вторая сборка и лежит рядом. */
 let PDFJS = null;
+let PDFJS_AT = 0;        // с какой ступени пробовать (отказ В РАБОТЕ двигает дальше)
 /* ПРИЧИНЫ ПО СТУПЕНЯМ НЕ ГЛОТАЕМ. Здесь ошибка ступени уходила в пустой `catch`, а наружу
    шло голое `throw new Error('pdf.js не загрузился')`: человек получал фразу, по которой
    нельзя отличить 404 от SyntaxError, и разбор прод-отказа ушёл на день (закон №22). */
@@ -633,10 +707,13 @@ const PDFJS_WHY = [];
 async function loadPdfjs() {
   if (PDFJS) return PDFJS;
   PDFJS_WHY.length = 0;
-  for (const p of ['./pdf.min.mjs', './legacy/pdf.min.mjs', './compat/pdf.min.mjs']) {
+  const BUILDS = ['./pdf.min.mjs', './legacy/pdf.min.mjs', './compat/pdf.min.mjs'];
+  for (; PDFJS_AT < BUILDS.length; PDFJS_AT++) {
+    const p = BUILDS[PDFJS_AT];
     try {
       const m = await import(p);
-      m.GlobalWorkerOptions.workerSrc = p.replace('pdf.min.mjs', 'pdf.worker.min.mjs');
+      // шим: полифилы нужны и в глобальном объекте воркера
+      m.GlobalWorkerOptions.workerSrc = p.replace('pdf.min.mjs', 'pdf.worker.shim.mjs');
       PDFJS = m;
       return m;
     } catch (e) {
@@ -706,6 +783,64 @@ async function checkVersion() {
   } catch (e) { /* сеть молчит - работаем как есть */ }
 }
 
+function paintMedia() {
+  const box = $('media');
+  if (!MTG || !MTG.on || !MEDIA.length) { box.hidden = true; return; }
+  box.hidden = false;
+  $('mTtl').textContent = T.mTtl;
+  const g = $('mgrid');
+  g.innerHTML = '';
+  for (const m of MEDIA) {
+    const el = document.createElement('div');
+    const k = PICK.indexOf(m.key);
+    el.className = 'mit' + (k >= 0 ? ' on' : '');
+    const kind = document.createElement('div');
+    kind.className = 'mk';
+    kind.textContent = (T.mKind[m.kind] || m.kind) + (m.ts ? ' · ' + fmtDate(m.ts) : '');
+    const d = document.createElement('div');
+    d.className = 'md';
+    d.textContent = m.descr || '';
+    const t = document.createElement('div');
+    t.className = 'tick';
+    t.textContent = k >= 0 ? String(k + 1) : '';
+    el.appendChild(kind); el.appendChild(d); el.appendChild(t);
+    el.onclick = () => {
+      const i = PICK.indexOf(m.key);
+      if (i >= 0) PICK.splice(i, 1);
+      else if (PICK.length >= (MTG.max || 20)) { say(T.mMax(MTG.max || 20), 'bad'); return; }
+      else PICK.push(m.key);
+      say('');
+      paintMedia();
+    };
+    g.appendChild(el);
+  }
+  const b = $('mGo');
+  b.textContent = T.mGo(PICK.length);
+  b.disabled = PICK.length < (MTG.min || 2);
+}
+
+/* «СМОНТИРОВАТЬ»: событие ложится на песочницу ТЕМ ЖЕ билетом, что и список. Бот забирает
+   его длинным опросом и присылает в чат экран пресетов. В событии - только ключи. */
+async function montageGo() {
+  const b = $('mGo');
+  b.disabled = true;
+  try {
+    await ticket();
+    const r = await fetch(u('/pdf/mtg/event'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'pick', ns: MTG.ns, keys: PICK }),
+    });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j || !j.ok) { say((j && (j.human || j.error)) || ('HTTP ' + r.status), 'bad'); b.disabled = false; return; }
+    say(T.mSent, 'ok');
+    PICK = [];
+    setTimeout(() => { try { tg && tg.close(); } catch (e) {} }, 900);
+  } catch (e) {
+    say(String(e && e.message || e), 'bad');
+    b.disabled = false;
+  }
+}
+
 function chips() {
   const box = $('chips');
   /* ГРУППА, ЗНАЧЕНИЕ, ПОДПИСЬ. Тап внутри группы переключает только ЕЁ; повторный тап по
@@ -754,6 +889,7 @@ $('back').onclick = () => { $('card').classList.remove('on'); };
 $('aView').onclick = view;
 $('aSend').onclick = send;
 $('aDrop').onclick = drop;
+$('mGo').onclick = montageGo;
 chips();
 load().then(chips);
 checkVersion();
